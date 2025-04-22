@@ -1,14 +1,13 @@
-# app.py
-
 import os
 import time
 import joblib
 import pandas as pd
 import numpy as np
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from scipy.sparse import csr_matrix
 from scipy.sparse.linalg import svds
 from sklearn.metrics import mean_squared_error, mean_absolute_error
+from typing import Optional, List
 
 MODEL_DIR = "model"
 PRED_PATH = os.path.join(MODEL_DIR, "pred_df.joblib")
@@ -25,8 +24,7 @@ def train_and_save_model():
 
     assert {'user_id', 'product_id', 'reordered'}.issubset(df.columns), "Faltan columnas necesarias"
 
-    df_sample = df.sample(frac=0.01, random_state=42)
-    interaction = df_sample.groupby(['user_id', 'product_id'])['reordered'].sum().unstack(fill_value=0)
+    interaction = df.groupby(['user_id', 'product_id'])['reordered'].sum().unstack(fill_value=0)
 
     interaction_centered = interaction.sub(interaction.mean(axis=1), axis=0)
     user_means = interaction.mean(axis=1)
@@ -70,9 +68,9 @@ interaction = joblib.load(INTER_PATH)
 
 
 # --- Recomendador básico ---
-def recommend_svd(user_id: int, n: int = 5):
+def recommend_svd(user_id: int, n: int = 5) -> Optional[List[int]]:
     if user_id not in pred_df.index:
-        return []
+        return None
 
     seen = interaction.loc[user_id]
     seen = set(seen[seen > 0].index)
@@ -94,9 +92,21 @@ def recommend(user_id: int, n: int = 5):
     start = time.time()
     recs = recommend_svd(user_id, n)
     latency = time.time() - start
+
+    if recs is None:
+        raise HTTPException(status_code=404, detail=f"El usuario {user_id} no existe en el modelo actual.")
+
     return {
         "user_id": user_id,
         "n": n,
         "recommendations": recs,
         "inference_time_s": round(latency, 4)
     }
+
+
+@app.get("/users")
+def get_all_users():
+    """
+    Devuelve una lista de user_id válidos presentes en el modelo actual.
+    """
+    return {"available_user_ids": pred_df.index.tolist()}

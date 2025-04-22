@@ -13,14 +13,14 @@ from sklearn.metrics import mean_squared_error, mean_absolute_error
 MODEL_DIR = "model"
 PRED_PATH = os.path.join(MODEL_DIR, "pred_df.joblib")
 INTER_PATH = os.path.join(MODEL_DIR, "interaction.joblib")
-DATA_PATH = "csv/final.csv"
+DATA_PATH = "csv/small_sample.csv"
 
 app = FastAPI(title="Recomendador SVD Normalizado")
 
 
 # --- Función para entrenar y guardar el modelo ---
 def train_and_save_model():
-    print("📦 Cargando datos desde csv/final.csv ...")
+    print("📦 Cargando datos desde csv/small_sample.csv ...")
     df = pd.read_csv(DATA_PATH)
 
     assert {'user_id', 'product_id', 'reordered'}.issubset(df.columns), "Faltan columnas necesarias"

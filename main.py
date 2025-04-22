@@ -24,7 +24,8 @@ def train_and_save_model():
 
     assert {'user_id', 'product_id', 'reordered'}.issubset(df.columns), "Faltan columnas necesarias"
 
-    interaction = df.groupby(['user_id', 'product_id'])['reordered'].sum().unstack(fill_value=0)
+    df_sample = df.sample(frac=0.5, random_state=42)
+    interaction = df_sample.groupby(['user_id', 'product_id'])['reordered'].sum().unstack(fill_value=0)
 
     interaction_centered = interaction.sub(interaction.mean(axis=1), axis=0)
     user_means = interaction.mean(axis=1)

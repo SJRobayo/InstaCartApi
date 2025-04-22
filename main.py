@@ -12,7 +12,7 @@ from typing import Optional, List
 MODEL_DIR = "model"
 PRED_PATH = os.path.join(MODEL_DIR, "pred_df.joblib")
 INTER_PATH = os.path.join(MODEL_DIR, "interaction.joblib")
-DATA_PATH = "csv/small_sample.csv"
+DATA_PATH = "csv/definitivo.csv"
 
 app = FastAPI(title="Recomendador SVD Normalizado")
 
@@ -24,8 +24,7 @@ def train_and_save_model():
 
     assert {'user_id', 'product_id', 'reordered'}.issubset(df.columns), "Faltan columnas necesarias"
 
-    df_sample = df.sample(frac=0.5, random_state=42)
-    interaction = df_sample.groupby(['user_id', 'product_id'])['reordered'].sum().unstack(fill_value=0)
+    interaction = df.groupby(['user_id', 'product_id'])['reordered'].sum().unstack(fill_value=0)
 
     interaction_centered = interaction.sub(interaction.mean(axis=1), axis=0)
     user_means = interaction.mean(axis=1)

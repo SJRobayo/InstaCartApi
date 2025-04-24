@@ -7,17 +7,20 @@ from fastapi import FastAPI, HTTPException
 from scipy.sparse import csr_matrix
 from scipy.sparse.linalg import svds
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import mean_squared_error, mean_absolute_error, classification_report
+from sklearn.metrics import mean_squared_error, mean_absolute_error
 from typing import Optional, List
+from mlxtend.frequent_patterns import apriori, association_rules
+from mlxtend.preprocessing import TransactionEncoder
 
-# Paths
+# --- RUTAS DE ARCHIVOS ---
 MODEL_DIR = "model"
 PRED_PATH = os.path.join(MODEL_DIR, "pred_df.joblib")
 INTER_PATH = os.path.join(MODEL_DIR, "interaction.joblib")
 POP_MODEL_PATH = os.path.join(MODEL_DIR, "popular_model.pkl")
+MBA_PATH = os.path.join(MODEL_DIR, "mba_rules.joblib")
 DATA_PATH = "csv/definitivo.csv"
 
-app = FastAPI(title="Recomendador SVD + Popularidad Supervisada")
+app = FastAPI(title="Recomendador SVD + Popularidad + MBA")
 
 # --- ENTRENAMIENTO DEL MODELO SVD ---
 def train_and_save_model():
@@ -54,10 +57,9 @@ def train_and_save_model():
     joblib.dump(pred_df, PRED_PATH)
     joblib.dump(interaction, INTER_PATH)
 
-# --- ENTRENAMIENTO MODELO POPULARIDAD ---
+# --- ENTRENAMIENTO MODELO DE POPULARIDAD ---
 def train_popularity_model():
     print("📊 Entrenando modelo supervisado de popularidad...")
-
     df = pd.read_csv(DATA_PATH)
 
     product_counts = df.groupby('product_id')['reordered'].sum().reset_index()
@@ -84,6 +86,27 @@ def train_popularity_model():
     joblib.dump((clf, final_df[['product_id']]), POP_MODEL_PATH)
     print("🎉 Modelo de popularidad guardado.")
 
+# --- ENTRENAMIENTO MODELO MBA ---
+def train_mba_model():
+    print("🛒 Entrenando modelo de reglas de asociación (MBA)...")
+    df = pd.read_csv(DATA_PATH)
+
+    grouped = df.groupby('order_id')['product_id'].apply(list)
+    te = TransactionEncoder()
+    te_ary = te.fit(grouped).transform(grouped)
+    df_tf = pd.DataFrame(te_ary, columns=te.columns_)
+
+    frequent_itemsets = apriori(df_tf, min_support=0.01, use_colnames=True)
+    rules = association_rules(frequent_itemsets, metric="confidence", min_threshold=0.1)
+
+    rules['antecedents'] = rules['antecedents'].apply(lambda x: next(iter(x)) if len(x) == 1 else None)
+    rules['consequents'] = rules['consequents'].apply(lambda x: next(iter(x)) if len(x) == 1 else None)
+    rules = rules.dropna(subset=['antecedents', 'consequents'])
+
+    mba_df = rules[['antecedents', 'consequents', 'confidence']]
+    joblib.dump(mba_df, MBA_PATH)
+    print(f"📁 Reglas MBA guardadas en {MBA_PATH}")
+
 # --- CARGA DE MODELOS DESDE DISCO ---
 if not os.path.exists(PRED_PATH) or not os.path.exists(INTER_PATH):
     train_and_save_model()
@@ -91,9 +114,13 @@ if not os.path.exists(PRED_PATH) or not os.path.exists(INTER_PATH):
 if not os.path.exists(POP_MODEL_PATH):
     train_popularity_model()
 
+if not os.path.exists(MBA_PATH):
+    train_mba_model()
+
 pred_df = joblib.load(PRED_PATH)
 interaction = joblib.load(INTER_PATH)
 popular_model, product_ids_df = joblib.load(POP_MODEL_PATH)
+mba_rules = joblib.load(MBA_PATH)
 
 # --- FUNCIONES DE RECOMENDACIÓN ---
 def recommend_svd(user_id: int, n: int = 5) -> Optional[List[int]]:
@@ -127,7 +154,7 @@ def recommend_popular_model(n: int = 10):
 # --- ENDPOINTS FASTAPI ---
 @app.get("/")
 def root():
-    return {"message": "Sistema de recomendación activo con SVD y popularidad supervisada"}
+    return {"message": "Sistema de recomendación activo con SVD, popularidad y MBA"}
 
 @app.get("/recommend/{user_id}")
 def recommend(user_id: int, n: int = 5):
@@ -158,3 +185,22 @@ def get_popular_model(n: int = 10):
 @app.get("/users")
 def get_all_users():
     return {"available_user_ids": pred_df.index.tolist()}
+
+@app.post("/recommend_mba/")
+def recommend_mba(cart: List[int], top_k: int = 5):
+    if mba_rules.empty:
+        raise HTTPException(status_code=500, detail="Reglas MBA no entrenadas")
+
+    recommended = set()
+    for pid in cart:
+        matches = mba_rules[mba_rules['antecedents'] == pid]
+        matches = matches.sort_values(by="confidence", ascending=False)
+        recommended.update(matches['consequents'].tolist())
+
+    final_recs = [pid for pid in recommended if pid not in cart][:top_k]
+
+    return {
+        "cart": cart,
+        "recommendations": final_recs,
+        "rules_considered": len(recommended)
+    }

@@ -11,6 +11,8 @@ from sklearn.metrics import mean_squared_error, mean_absolute_error
 from typing import Optional, List
 from mlxtend.frequent_patterns import apriori, association_rules
 from mlxtend.preprocessing import TransactionEncoder
+from pydantic import BaseModel
+
 
 # --- RUTAS DE ARCHIVOS ---
 MODEL_DIR = "model"
@@ -186,21 +188,25 @@ def get_popular_model(n: int = 10):
 def get_all_users():
     return {"available_user_ids": pred_df.index.tolist()}
 
+class MbaRequest(BaseModel):
+    cart: List[int]
+    top_k: int = 5
 @app.post("/recommend_mba/")
-def recommend_mba(cart: List[int], top_k: int = 5):
+def recommend_mba(request: MbaRequest):
     if mba_rules.empty:
         raise HTTPException(status_code=500, detail="Reglas MBA no entrenadas")
 
     recommended = set()
-    for pid in cart:
+    for pid in request.cart:
         matches = mba_rules[mba_rules['antecedents'] == pid]
         matches = matches.sort_values(by="confidence", ascending=False)
         recommended.update(matches['consequents'].tolist())
 
-    final_recs = [pid for pid in recommended if pid not in cart][:top_k]
+    final_recs = [pid for pid in recommended if pid not in request.cart][:request.top_k]
 
     return {
-        "cart": cart,
+        "cart": request.cart,
         "recommendations": final_recs,
         "rules_considered": len(recommended)
     }
+

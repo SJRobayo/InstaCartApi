@@ -1,5 +1,6 @@
 fastapi
 mlxtend
+pydantic
 uvicorn[standard]
 pandas
 numpy

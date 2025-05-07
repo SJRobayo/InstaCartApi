@@ -14,8 +14,6 @@ from mlxtend.frequent_patterns import apriori, association_rules
 from mlxtend.preprocessing import TransactionEncoder
 from pydantic import BaseModel
 import csv
-from sklearn.metrics import accuracy_score, precision_score, recall_score
-from datetime import datetime
 from sklearn.metrics import accuracy_score, precision_score, recall_score, mean_squared_error
 from math import sqrt
 
@@ -192,13 +190,21 @@ def train_mba_model():
 
 # --- CARGA DE MODELOS ---
 os.makedirs(MODEL_DIR, exist_ok=True)
-model_files = [f"svd_cluster_{i}.joblib" for i in range(10)]
-if not any(os.path.exists(os.path.join(MODEL_DIR, f)) for f in model_files):
+
+# Verificar si los 4 modelos SVD por cluster existen
+svd_models_ok = all(os.path.exists(os.path.join(MODEL_DIR, f"svd_cluster_{i}.joblib")) for i in range(4))
+if not svd_models_ok:
     train_and_save_model_segmented_kmeans()
-if not os.path.exists(POP_MODEL_PATH):
+
+# Verificar si los 4 modelos de popularidad existen
+pop_models_ok = all(os.path.exists(os.path.join(MODEL_DIR, f"popular_model_cluster_{i}.pkl")) for i in range(4))
+if not pop_models_ok:
     train_popularity_model_segmented()
+
+# Verificar si el modelo MBA ya existe
 if not os.path.exists(MBA_RULES_PATH):
     train_mba_model()
+
 
 #popular_model, product_ids_df = joblib.load(POP_MODEL_PATH)
 mba_rules = joblib.load(MBA_RULES_PATH)

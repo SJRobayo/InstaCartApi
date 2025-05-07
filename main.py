@@ -120,37 +120,54 @@ def get_user_cluster(user_id: int) -> int:
     return rfm_clusters.loc[user_id]['cluster'] if user_id in rfm_clusters.index else 0
 
 # --- ENTRENAMIENTO MODELO DE POPULARIDAD ---
-def train_popularity_model():
-    print("📊 Entrenando modelo supervisado de popularidad...")
+def train_popularity_model_segmented():
+    print("📊 Entrenando modelo supervisado de popularidad segmentado por cluster...")
     df = pd.read_csv(DATA_PATH)
-    product_counts = df.groupby('product_id')['reordered'].sum().reset_index()
-    threshold = product_counts['reordered'].quantile(0.90)
-    product_counts['popular'] = (product_counts['reordered'] >= threshold).astype(int)
-    features = df.groupby('product_id').agg({
-        'add_to_cart_order': 'mean',
-        'order_hour_of_day': 'mean',
-        'order_dow': 'mean',
-        'days_since_prior_order': 'mean',
-        'aisle_id': 'first',
-        'department_id': 'first'
-    }).reset_index()
-    final_df = features.merge(product_counts[['product_id', 'popular']], on='product_id')
-    X = final_df.drop(columns=['product_id', 'popular'])
-    y = final_df['popular']
-    clf = RandomForestClassifier(n_estimators=100, random_state=42)
-    clf.fit(X, y)
-    joblib.dump((clf, final_df[['product_id']]), POP_MODEL_PATH)
-    print("🎉 Modelo de popularidad guardado.")
+    rfm_clusters = get_or_load_rfm_clusters()
+    for cluster_id in sorted(rfm_clusters['cluster'].unique()):
+        users_in_cluster = rfm_clusters[rfm_clusters['cluster'] == cluster_id].index
+        df_cluster = df[df['user_id'].isin(users_in_cluster)]
 
-    # Evaluación y métricas
-    y_pred = clf.predict(X)
-    metrics = {
-        "accuracy": accuracy_score(y, y_pred),
-        "precision": precision_score(y, y_pred),
-        "recall": recall_score(y, y_pred)
-    }
-    save_metrics("popular_model", metrics)
-    print(f"📈 Métricas modelo de popularidad: {metrics}")
+        if df_cluster.empty:
+            print(f"⚠️ Cluster {cluster_id} vacío, se omite.")
+            continue
+
+        product_counts = df_cluster.groupby('product_id')['reordered'].sum().reset_index()
+        threshold = product_counts['reordered'].quantile(0.90)
+        product_counts['popular'] = (product_counts['reordered'] >= threshold).astype(int)
+
+        features = df_cluster.groupby('product_id').agg({
+            'add_to_cart_order': 'mean',
+            'order_hour_of_day': 'mean',
+            'order_dow': 'mean',
+            'days_since_prior_order': 'mean',
+            'aisle_id': 'first',
+            'department_id': 'first'
+        }).reset_index()
+
+        final_df = features.merge(product_counts[['product_id', 'popular']], on='product_id')
+        if final_df['popular'].nunique() < 2:
+            print(f"⚠️ Cluster {cluster_id} no tiene suficientes clases para clasificación, se omite.")
+            continue
+
+        X = final_df.drop(columns=['product_id', 'popular'])
+        y = final_df['popular']
+        clf = RandomForestClassifier(n_estimators=100, random_state=42)
+        clf.fit(X, y)
+
+        model_path = os.path.join(MODEL_DIR, f"popular_model_cluster_{cluster_id}.pkl")
+        joblib.dump((clf, final_df[['product_id']]), model_path)
+        print(f"✅ Modelo de popularidad guardado para cluster {cluster_id}.")
+
+        # Métricas
+        y_pred = clf.predict(X)
+        metrics = {
+            "accuracy": accuracy_score(y, y_pred),
+            "precision": precision_score(y, y_pred),
+            "recall": recall_score(y, y_pred)
+        }
+        save_metrics(f"popular_model_cluster_{cluster_id}", metrics)
+        print(f"📈 Métricas popularidad cluster {cluster_id}: {metrics}")
 
 # --- ENTRENAMIENTO DE MARKET BASKET ANALYSIS ---
 def train_mba_model():
@@ -179,11 +196,11 @@ model_files = [f"svd_cluster_{i}.joblib" for i in range(10)]
 if not any(os.path.exists(os.path.join(MODEL_DIR, f)) for f in model_files):
     train_and_save_model_segmented_kmeans()
 if not os.path.exists(POP_MODEL_PATH):
-    train_popularity_model()
+    train_popularity_model_segmented()
 if not os.path.exists(MBA_RULES_PATH):
     train_mba_model()
 
-popular_model, product_ids_df = joblib.load(POP_MODEL_PATH)
+#popular_model, product_ids_df = joblib.load(POP_MODEL_PATH)
 mba_rules = joblib.load(MBA_RULES_PATH)
 
 
@@ -209,7 +226,13 @@ def recommend_segmented_svd(user_id: int, n: int = 5) -> Optional[dict]:
     }
 
 
-def recommend_popular_model(n: int = 10):
+def recommend_popular_model(user_id: int, n: int = 10):
+    cluster_id = get_user_cluster(user_id)
+    model_path = os.path.join(MODEL_DIR, f"popular_model_cluster_{cluster_id}.pkl")
+    if not os.path.exists(model_path):
+        return []
+    clf, product_df = joblib.load(model_path)
+
     df = pd.read_csv(DATA_PATH)
     features = df.groupby('product_id').agg({
         'add_to_cart_order': 'mean',
@@ -219,8 +242,9 @@ def recommend_popular_model(n: int = 10):
         'aisle_id': 'first',
         'department_id': 'first'
     }).reset_index()
+
     X_all = features.drop(columns=['product_id'])
-    probs = popular_model.predict_proba(X_all)[:, 1]
+    probs = clf.predict_proba(X_all)[:, 1]
     product_ids = features['product_id']
     top_n = product_ids[np.argsort(-probs)][:n]
     return top_n.tolist()
@@ -256,17 +280,21 @@ def recommend(user_id: int, n: int = 5):
         "inference_time_s": round(latency, 4)
     }
 
-@app.get("/popular_products_model")
-def get_popular_model(n: int = 10):
+@app.get("/popular_products_model/{user_id}")
+def get_popular_model(user_id: int, n: int = 10):
     start = time.time()
-    recs = recommend_popular_model(n)
+    recs = recommend_popular_model(user_id, n)
     latency = time.time() - start
+    if not recs:
+        raise HTTPException(status_code=404, detail="No se pudo generar recomendación para este usuario.")
     return {
-        "method": "supervised_popularity_model",
+        "method": "supervised_popularity_model_segmented",
+        "user_id": user_id,
         "top_n": n,
         "recommendations": recs,
         "inference_time_s": round(latency, 4)
     }
+
 
 @app.get("/users")
 def get_all_users():
